@@ -14,6 +14,9 @@ import urllib.error
 
 UI_URL = "http://127.0.0.1:3221"
 
+RECENT_MAX = 5
+RECENT_LABEL_LEN = 45
+
 try:
     import gi
     gi.require_version("AyatanaAppIndicator3", "0.1")
@@ -73,6 +76,44 @@ def _send_settings(patch):
     api_post_json("/settings", patch)
 
 
+def format_recent_label(entry, max_len=RECENT_LABEL_LEN):
+    """Single-line menu label for a history entry. Callers must disable
+    mnemonics (set_use_underline(False)) since text may contain '_'."""
+    text = " ".join(str(entry.get("text", "")).split())
+    if len(text) > max_len:
+        text = text[:max_len - 1] + "\u2026"
+    stamp = entry.get("time", "")
+    return f"{stamp}  {text}" if stamp else text
+
+
+def _sync_recent(refs):
+    history = api_get("/history")
+    if not isinstance(history, list):
+        return
+
+    recent = history[-RECENT_MAX:][::-1]
+    sig = tuple((e.get("time", ""), e.get("text", "")) for e in recent)
+    if sig == refs.get("recent_sig"):
+        return
+    refs["recent_sig"] = sig
+
+    sub = refs["recent_sub"]
+    for child in sub.get_children():
+        sub.remove(child)
+    if not recent:
+        empty = Gtk.MenuItem(label="(no transcriptions yet)")
+        empty.set_sensitive(False)
+        sub.append(empty)
+    for entry in recent:
+        text = entry.get("text", "")
+        item = Gtk.MenuItem(label=format_recent_label(entry))
+        item.set_use_underline(False)
+        item.connect("activate", lambda _, t=text: api_post_json(
+            "/copy_to_clipboard", {"text": t}))
+        sub.append(item)
+    sub.show_all()
+
+
 def _sync_menu(refs):
     config = api_get("/llm_config")
     if not config:
@@ -124,6 +165,13 @@ def build_menu(indicator):
     output_clip.connect("activate", lambda _: _send_settings({"clipboard_mode": False}))
     menu.append(output_type)
     menu.append(output_clip)
+    menu.append(Gtk.SeparatorMenuItem())
+
+    # === Recent transcriptions submenu ===
+    recent_parent = Gtk.MenuItem(label="Recent Transcriptions")
+    recent_sub = Gtk.Menu()
+    recent_parent.set_submenu(recent_sub)
+    menu.append(recent_parent)
     menu.append(Gtk.SeparatorMenuItem())
 
     # === LLM submenu ===
@@ -184,6 +232,8 @@ def build_menu(indicator):
         "mode_push": mode_push,
         "output_type": output_type,
         "output_clip": output_clip,
+        "recent_sub": recent_sub,
+        "recent_sig": None,
         "llm_off": llm_off,
         "llm_grammar": llm_grammar,
         "llm_translate": llm_translate,
@@ -216,6 +266,7 @@ def main():
             time.sleep(2)
             GLib.idle_add(update_icon, indicator)
             GLib.idle_add(_sync_menu, refs)
+            GLib.idle_add(_sync_recent, refs)
 
     threading.Thread(target=poll, daemon=True).start()
     Gtk.main()

@@ -59,7 +59,7 @@ python app.py          # served at http://127.0.0.1:3221
 - `pystray` uses X11 System Tray protocol (incompatible with GNOME AppIndicator)
 - Must use `gi.repository.AyatanaAppIndicator3` via system Python with explicit `DISPLAY` + `DBUS_SESSION_BUS_ADDRESS`
 - GNOME requires `gnome-shell-extension-ubuntu-appindicators` enabled
-- Full tray menu: mode (Toggle/Push-to-Hold), output (Type/Clipboard), LLM submenu (Off/Grammar/Translate/Custom), Reconnect Hotkey, Open Web UI, Quit
+- Full tray menu: mode (Toggle/Push-to-Hold), output (Type/Clipboard), Recent Transcriptions submenu (last 5, newest first, click to copy via POST /copy_to_clipboard), LLM submenu (Off/Grammar/Translate/Custom), Reconnect Hotkey, Open Web UI, Quit
 - Polls `/llm_config` every 2s to sync menu checkmarks via `GLib.idle_add`
 
 ### Push-to-hold safety net
