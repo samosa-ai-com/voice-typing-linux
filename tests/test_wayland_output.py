@@ -26,6 +26,7 @@ def _make_app(vd):
 
 
 def test_prefer_ydotool_only_on_wayland_with_binary(vd, monkeypatch):
+    monkeypatch.delenv("WAYLAND_DISPLAY", raising=False)
     monkeypatch.setenv("XDG_SESSION_TYPE", "wayland")
     monkeypatch.setattr(vd.shutil, "which",
                         lambda name: "/usr/bin/ydotool" if name == "ydotool" else None)
@@ -122,3 +123,76 @@ def test_backspace_falls_back_when_ydotool_down(vd, monkeypatch):
     _make_app(vd)._backspace(1)
     assert calls[0][0] == "ydotool"
     assert calls[1][:2] == ["xdotool", "key"]
+
+
+def test_non_ascii_skips_typing_legs_straight_to_paste(vd, monkeypatch):
+    """ydotool type maps through a US-layout table (mojibake for non-ASCII)
+    and xdotool is blind on Wayland, so non-ASCII must go straight to paste."""
+    monkeypatch.setattr(vd, "_prefer_ydotool", lambda: True)
+    fake_clip = types.ModuleType("pyperclip")
+    fake_clip.copy = lambda text: None
+    monkeypatch.setitem(sys.modules, "pyperclip", fake_clip)
+    calls = []
+    monkeypatch.setattr(vd.subprocess, "run", _ok_run(calls))
+
+    _make_app(vd).type_text("नमस्ते")
+
+    assert calls == [["ydotool", "key", "29:1", "47:1", "47:0", "29:0"]]
+
+
+def test_prefer_ydotool_honors_wayland_display(vd, monkeypatch):
+    monkeypatch.delenv("XDG_SESSION_TYPE", raising=False)
+    monkeypatch.setattr(vd.shutil, "which", lambda name: "/usr/bin/ydotool")
+    monkeypatch.setenv("WAYLAND_DISPLAY", "wayland-0")
+    assert vd._prefer_ydotool() is True
+
+    monkeypatch.delenv("WAYLAND_DISPLAY", raising=False)
+    assert vd._prefer_ydotool() is False
+
+
+def test_backspace_falls_back_to_pynput_when_xdotool_fails(vd, monkeypatch):
+    from pynput import keyboard as kb_mod
+
+    monkeypatch.setattr(vd, "_prefer_ydotool", lambda: False)
+    monkeypatch.setattr(vd.subprocess, "run",
+                        lambda *a, **k: SimpleNamespace(returncode=1, stderr=b""))
+    pressed = []
+
+    class RecController:
+        def press(self, key):
+            pressed.append(("press", key))
+
+        def release(self, key):
+            pressed.append(("release", key))
+
+    monkeypatch.setattr(kb_mod, "Controller", RecController)
+
+    _make_app(vd)._backspace(2)
+    assert len(pressed) == 4
+
+
+def test_paste_returns_false_when_xdotool_paste_fails(vd, monkeypatch):
+    monkeypatch.setattr(vd, "_prefer_ydotool", lambda: False)
+    fake_clip = types.ModuleType("pyperclip")
+    fake_clip.copy = lambda text: None
+    monkeypatch.setitem(sys.modules, "pyperclip", fake_clip)
+    monkeypatch.setattr(vd.subprocess, "run",
+                        lambda *a, **k: SimpleNamespace(returncode=1, stderr=b""))
+
+    assert _make_app(vd)._paste_via_clipboard("paste me") is False
+
+
+def test_clipboard_copy_uses_wl_copy_when_pyperclip_fails(vd, monkeypatch):
+    def no_pyperclip(text):
+        raise RuntimeError("no display")
+
+    fake_clip = types.ModuleType("pyperclip")
+    fake_clip.copy = no_pyperclip
+    monkeypatch.setitem(sys.modules, "pyperclip", fake_clip)
+    monkeypatch.setattr(vd.shutil, "which",
+                        lambda name: "/usr/bin/wl-copy" if name == "wl-copy" else None)
+    calls = []
+    monkeypatch.setattr(vd.subprocess, "run", _ok_run(calls))
+
+    _make_app(vd).copy_to_clipboard("hello wayland")
+    assert calls == [["wl-copy"]]

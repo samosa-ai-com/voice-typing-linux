@@ -79,10 +79,12 @@ def _send_settings(patch):
 def format_recent_label(entry, max_len=RECENT_LABEL_LEN):
     """Single-line menu label for a history entry. Callers must disable
     mnemonics (set_use_underline(False)) since text may contain '_'."""
-    text = " ".join(str(entry.get("text", "")).split())
+    if not isinstance(entry, dict):
+        entry = {}
+    text = " ".join(str(entry.get("text", "") or "").split())
     if len(text) > max_len:
         text = text[:max_len - 1] + "\u2026"
-    stamp = entry.get("time", "")
+    stamp = entry.get("time", "") or ""
     return f"{stamp}  {text}" if stamp else text
 
 
@@ -91,11 +93,10 @@ def _sync_recent(refs):
     if not isinstance(history, list):
         return
 
-    recent = history[-RECENT_MAX:][::-1]
-    sig = tuple((e.get("time", ""), e.get("text", "")) for e in recent)
+    recent = [e for e in history[-RECENT_MAX:][::-1] if isinstance(e, dict)]
+    sig = tuple((e.get("time", "") or "", e.get("text", "") or "") for e in recent)
     if sig == refs.get("recent_sig"):
         return
-    refs["recent_sig"] = sig
 
     sub = refs["recent_sub"]
     for child in sub.get_children():
@@ -105,13 +106,14 @@ def _sync_recent(refs):
         empty.set_sensitive(False)
         sub.append(empty)
     for entry in recent:
-        text = entry.get("text", "")
+        text = entry.get("text", "") or ""
         item = Gtk.MenuItem(label=format_recent_label(entry))
         item.set_use_underline(False)
         item.connect("activate", lambda _, t=text: api_post_json(
             "/copy_to_clipboard", {"text": t}))
         sub.append(item)
     sub.show_all()
+    refs["recent_sig"] = sig
 
 
 def _sync_menu(refs):
