@@ -268,6 +268,10 @@ _config_lock = threading.Lock()
 _YD_KEY_BACKSPACE = 14
 _YD_KEY_LEFTCTRL = 29
 _YD_KEY_V = 47
+# ydotool type defaults (20ms hold + 20ms delay ≈ 25 chars/s) feel like a
+# typewriter; evdev events are queued reliably, so small gaps are plenty.
+_YD_TYPE_KEY_DELAY_MS = 2
+_YD_TYPE_KEY_HOLD_MS = 2
 
 
 def _session_type():
@@ -890,7 +894,11 @@ class VoiceDictationApp:
         a US-layout table, so non-ASCII falls through to the paste path."""
         try:
             result = subprocess.run(
-                ["ydotool", "type", "--", text], capture_output=True, timeout=60
+                ["ydotool", "type",
+                 "-d", str(_YD_TYPE_KEY_DELAY_MS),
+                 "-H", str(_YD_TYPE_KEY_HOLD_MS),
+                 "--", text],
+                capture_output=True, timeout=60,
             )
             if result.returncode == 0:
                 print(f"[TYPE] Typed via ydotool: '{text[:50]}'", flush=True)

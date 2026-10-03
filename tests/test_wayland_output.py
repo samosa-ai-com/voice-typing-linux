@@ -52,8 +52,9 @@ def test_ydotool_type_used_first_on_wayland(vd, monkeypatch):
 
     _make_app(vd).type_text("hello wayland")
 
-    assert calls[0][:3] == ["ydotool", "type", "--"]
-    assert calls[0][3] == "hello wayland"
+    assert calls[0][:2] == ["ydotool", "type"]
+    assert calls[0][1:6] == ["type", "-d", "2", "-H", "2"]
+    assert calls[0][-2:] == ["--", "hello wayland"]
     assert all(c[0] != "xdotool" for c in calls)
     assert "hello wayland" not in Controller.typed_text
 
