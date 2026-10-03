@@ -3,6 +3,7 @@ import threading
 import time
 import json
 import re
+import shutil
 import requests
 import sounddevice as sd
 import scipy.io.wavfile as wav
@@ -252,6 +253,79 @@ def _load_dotenv():
 _load_dotenv()
 
 _config_lock = threading.Lock()
+
+
+# ---------------------------------------------------------------------------
+# Text-output backend selection (X11 vs Wayland)
+#
+# xdotool and pynput inject via the X server (XTEST/XRecord). On Wayland
+# sessions (e.g. Ubuntu 26.04 GNOME) those events are accepted by XWayland
+# but delivered to nobody, so typing/paste silently does nothing. ydotool
+# injects at the evdev/uinput level instead and works on both, but needs
+# the `ydotoold` daemon running (packaged as a user systemd unit).
+# ---------------------------------------------------------------------------
+# evdev key codes (linux/input-event-codes.h) — stable across layouts.
+_YD_KEY_BACKSPACE = 14
+_YD_KEY_LEFTCTRL = 29
+_YD_KEY_V = 47
+# ydotool type defaults (20ms hold + 20ms delay ≈ 25 chars/s) feel like a
+# typewriter; evdev events are queued reliably, so small gaps are plenty.
+_YD_TYPE_KEY_DELAY_MS = 2
+_YD_TYPE_KEY_HOLD_MS = 2
+
+
+def _session_type():
+    return os.environ.get("XDG_SESSION_TYPE", "").lower()
+
+
+def _has_ydotool():
+    return shutil.which("ydotool") is not None
+
+
+def _prefer_ydotool():
+    """True when X11 injectors are known-blind: a Wayland session with
+    ydotool installed. Everywhere else (X11 like Ubuntu 24.04, or missing
+    ydotool) the legacy xdotool-first order is kept."""
+    on_wayland = _session_type() == "wayland" or bool(os.environ.get("WAYLAND_DISPLAY"))
+    return on_wayland and _has_ydotool()
+
+
+def _copy_to_system_clipboard(text):
+    """Copy text to the system clipboard. Returns True on success.
+
+    Tries pyperclip, then wl-copy (Wayland, from wl-clipboard), then xclip
+    (X11). Returncodes are checked so a silent copy failure never masquerades
+    as success to the paste path.
+    """
+    try:
+        import pyperclip
+        pyperclip.copy(text)
+        return True
+    except Exception as e:
+        print(f"[CLIP] pyperclip failed: {e}", flush=True)
+    if shutil.which("wl-copy") is not None:
+        try:
+            result = subprocess.run(
+                ["wl-copy"], input=text, text=True, timeout=3,
+                capture_output=True,
+            )
+            if result.returncode == 0:
+                return True
+            print(f"[CLIP] wl-copy failed (code {result.returncode})", flush=True)
+        except Exception as e:
+            print(f"[CLIP] wl-copy error: {e}", flush=True)
+    try:
+        result = subprocess.run(
+            ["xclip", "-selection", "clipboard"],
+            input=text, text=True, timeout=3,
+            capture_output=True,
+        )
+        if result.returncode == 0:
+            return True
+        print(f"[CLIP] xclip failed (code {result.returncode})", flush=True)
+    except Exception as e:
+        print(f"[CLIP] xclip error: {e}", flush=True)
+    return False
 
 
 class AudioRecorder:
@@ -729,28 +803,26 @@ class VoiceDictationApp:
         return text
 
     def copy_to_clipboard(self, text):
-        try:
-            import pyperclip
-            pyperclip.copy(text)
+        if _copy_to_system_clipboard(text):
             print(f"[CLIP] Copied to clipboard: '{text}'", flush=True)
-            return
-        except Exception as e:
-            print(f"[CLIP] pyperclip failed: {e}", flush=True)
-        try:
-            subprocess.run(["xclip", "-selection", "clipboard"], input=text, text=True, timeout=3)
-            print(f"[CLIP] Copied via xclip: '{text}'", flush=True)
-        except Exception as e:
-            print(f"[CLIP] xclip also failed: {e}", flush=True)
+        else:
+            print("[CLIP] All clipboard copy methods failed", flush=True)
 
     def _backspace(self, count):
+        if _prefer_ydotool():
+            if self._ydotool_key([(_YD_KEY_BACKSPACE, 1), (_YD_KEY_BACKSPACE, 0)] * count):
+                return
+            print("[TYPE] ydotool backspace failed, falling back", flush=True)
         try:
-            subprocess.run(
+            result = subprocess.run(
                 ["xdotool", "key"] + ["BackSpace"] * count,
                 capture_output=True, timeout=2,
             )
-            return
-        except Exception:
-            pass
+            if result.returncode == 0:
+                return
+            print(f"[TYPE] xdotool backspace failed (code {result.returncode}), falling back", flush=True)
+        except Exception as e:
+            print(f"[TYPE] xdotool backspace error: {e}, falling back", flush=True)
         try:
             from pynput.keyboard import Controller, Key
             c = Controller()
@@ -850,22 +922,65 @@ class VoiceDictationApp:
         else:
             self.copy_to_clipboard(processed)
 
+    def _ydotool_type(self, text):
+        """Type text via ydotool (evdev-level; used on the Wayland path).
+        Returns True on success. ASCII-only: ydotool maps characters through
+        a US-layout table, so callers must route non-ASCII to the paste path."""
+        try:
+            result = subprocess.run(
+                ["ydotool", "type",
+                 "-d", str(_YD_TYPE_KEY_DELAY_MS),
+                 "-H", str(_YD_TYPE_KEY_HOLD_MS),
+                 "--", text],
+                capture_output=True, timeout=15,
+            )
+            if result.returncode == 0:
+                print(f"[TYPE] Typed via ydotool: '{text[:50]}'", flush=True)
+                return True
+            print(f"[TYPE] ydotool failed (code {result.returncode}): {result.stderr.decode(errors='replace')[:100]}", flush=True)
+        except Exception as e:
+            print(f"[TYPE] ydotool error: {e}", flush=True)
+        return False
+
+    def _ydotool_key(self, sequence):
+        """Emit raw key down/up pairs via ydotool.
+
+        sequence: list of (evdev_keycode, value) tuples, e.g. [(29, 1), (47, 1)]
+        for Ctrl down + V down. Returns True when the daemon accepted them."""
+        args = ["ydotool", "key"] + [f"{code}:{value}" for code, value in sequence]
+        try:
+            result = subprocess.run(args, capture_output=True, timeout=10)
+            if result.returncode != 0:
+                print(f"[TYPE] ydotool key failed (code {result.returncode})", flush=True)
+            return result.returncode == 0
+        except Exception as e:
+            print(f"[TYPE] ydotool key error: {e}", flush=True)
+            return False
+
     def type_text(self, text):
         if not text:
             return
         with self._typing_lock:
             print(f"Injecting: '{text}'", flush=True)
             self.last_transcription = text
-            try:
-                result = subprocess.run(
-                    ["xdotool", "type", "--clearmodifiers", text], capture_output=True, timeout=30
-                )
-                if result.returncode == 0:
-                    print(f"[TYPE] Typed via xdotool: '{text[:50]}'", flush=True)
-                    return
-                print(f"[TYPE] xdotool failed (code {result.returncode}): {result.stderr.decode()[:100]}", flush=True)
-            except Exception as e:
-                print(f"[TYPE] xdotool error: {e}", flush=True)
+            prefer_ydotool = _prefer_ydotool()
+            if prefer_ydotool and text.isascii() and self._ydotool_type(text):
+                return
+            # NOTE (non-ASCII on Wayland): ydotool type maps through a US-layout
+            # table and xdotool is blind on Wayland, so skip both typing legs
+            # and go straight to clipboard paste instead of emitting mojibake
+            # (or swallowing the text behind a vacuous xdotool success).
+            if not (prefer_ydotool and not text.isascii()):
+                try:
+                    result = subprocess.run(
+                        ["xdotool", "type", "--clearmodifiers", text], capture_output=True, timeout=30
+                    )
+                    if result.returncode == 0:
+                        print(f"[TYPE] Typed via xdotool: '{text[:50]}'", flush=True)
+                        return
+                    print(f"[TYPE] xdotool failed (code {result.returncode}): {result.stderr.decode(errors='replace')[:100]}", flush=True)
+                except Exception as e:
+                    print(f"[TYPE] xdotool error: {e}", flush=True)
             if self._paste_via_clipboard(text):
                 return
             try:
@@ -874,26 +989,27 @@ class VoiceDictationApp:
                 print(f"[TYPE] Typed via pynput: '{text[:50]}'", flush=True)
             except Exception as e:
                 print(f"[TYPE] pynput also failed: {e}", flush=True)
-                print("Warning: both xdotool and pynput failed to type text", flush=True)
+                print("Warning: all backends failed to type text", flush=True)
 
     def _paste_via_clipboard(self, text):
+        if not _copy_to_system_clipboard(text):
+            return False
+        if _prefer_ydotool():
+            if self._ydotool_key([(_YD_KEY_LEFTCTRL, 1), (_YD_KEY_V, 1),
+                                  (_YD_KEY_V, 0), (_YD_KEY_LEFTCTRL, 0)]):
+                print(f"[TYPE] Pasted via clipboard (ydotool ctrl+v): '{text[:50]}'", flush=True)
+                return True
+            print("[TYPE] ydotool ctrl+v failed, falling back", flush=True)
         try:
-            import pyperclip
-            pyperclip.copy(text)
-        except Exception as e:
-            print(f"[TYPE] pyperclip copy failed: {e}", flush=True)
-            try:
-                subprocess.run(["xclip", "-selection", "clipboard"], input=text, text=True, timeout=3)
-            except Exception as e2:
-                print(f"[TYPE] xclip also failed: {e2}", flush=True)
-                return False
-        try:
-            subprocess.run(
+            result = subprocess.run(
                 ["xdotool", "key", "--clearmodifiers", "ctrl+v"],
                 capture_output=True, timeout=3,
             )
-            print(f"[TYPE] Pasted via clipboard: '{text[:50]}'", flush=True)
-            return True
+            if result.returncode == 0:
+                print(f"[TYPE] Pasted via clipboard: '{text[:50]}'", flush=True)
+                return True
+            print(f"[TYPE] ctrl+v paste failed (code {result.returncode}), falling back", flush=True)
+            return False
         except Exception as e:
             print(f"[TYPE] ctrl+v paste failed, falling back: {e}", flush=True)
             return False
@@ -1282,8 +1398,7 @@ class VoiceDictationApp:
             self.toggle_recording()
         if self.backspace_after_hotkey:
             try:
-                subprocess.run(["xdotool", "key", "--clearmodifiers", "BackSpace"],
-                              capture_output=True, timeout=1)
+                self._backspace(1)
             except Exception:
                 pass
 

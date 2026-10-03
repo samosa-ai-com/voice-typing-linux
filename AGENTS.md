@@ -45,9 +45,10 @@ python app.py          # served at http://127.0.0.1:3221
 3. LLM credentials (`OPENAI_*`) come from `.env` only — excluded from `config.json`
 
 ### Typing
-- Falls back: `xdotool type --clearmodifiers` → `pynput.keyboard.Controller().type()` → printed warning
-- Clipboard fallback: `pyperclip` → `xclip -selection clipboard`
-- Wayland: xdotool/pynput don't work; requires `ydotool`
+- X11 (e.g. Ubuntu 24.04): `xdotool type --clearmodifiers` → clipboard+paste → `pynput.keyboard.Controller().type()` → printed warning
+- Wayland (e.g. Ubuntu 26.04 GNOME): `ydotool type` first (needs `ydotoold` user service + `input` group), then Ctrl+V paste via `ydotool key 29:1 47:1 47:0 29:0`, then the X11 chain as fallback. Backend chosen by `_prefer_ydotool()` (`XDG_SESSION_TYPE=wayland` + `ydotool` binary present)
+- Backspace injection: same backend order (`ydotool key 14:1 14:0`, then xdotool, then pynput); `_on_hotkey`'s backspace-after-hotkey routes through `_backspace(1)`
+- Clipboard fallback: `pyperclip` → `xclip -selection clipboard` (copy only; the paste keystroke follows the backend order above)
 
 ### Sample rate gotcha
 - PulseAudio's "default" ALSA device (index 9) may not support 16000 Hz
@@ -58,7 +59,7 @@ python app.py          # served at http://127.0.0.1:3221
 - `pystray` uses X11 System Tray protocol (incompatible with GNOME AppIndicator)
 - Must use `gi.repository.AyatanaAppIndicator3` via system Python with explicit `DISPLAY` + `DBUS_SESSION_BUS_ADDRESS`
 - GNOME requires `gnome-shell-extension-ubuntu-appindicators` enabled
-- Full tray menu: mode (Toggle/Push-to-Hold), output (Type/Clipboard), LLM submenu (Off/Grammar/Translate/Custom), Reconnect Hotkey, Open Web UI, Quit
+- Full tray menu: mode (Toggle/Push-to-Hold), output (Type/Clipboard), Recent Transcriptions submenu (last 5, newest first, click to copy via POST /copy_to_clipboard), LLM submenu (Off/Grammar/Translate/Custom), Reconnect Hotkey, Open Web UI, Quit
 - Polls `/llm_config` every 2s to sync menu checkmarks via `GLib.idle_add`
 
 ### Push-to-hold safety net

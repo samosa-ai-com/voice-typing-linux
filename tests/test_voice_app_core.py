@@ -164,6 +164,8 @@ def test_transcribe_initial_prompt_truncation(vd, tmp_path, monkeypatch):
 
 def test_type_text_falls_back_to_controller_when_xdotool_fails(vd, monkeypatch):
     app = vd.VoiceDictationApp()
+    # Legacy X11 chain (Wayland/ydotool order is covered in test_wayland_output.py)
+    monkeypatch.setattr(vd, "_prefer_ydotool", lambda: False)
 
     # Make paste fail (xclip), xdotool type fail (non-zero), then pynput fallback
     call_log = []

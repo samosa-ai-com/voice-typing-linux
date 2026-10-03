@@ -137,3 +137,56 @@ def test_devices_route_returns_list(monkeypatch):
 
     assert res.status_code == 200
     assert res.get_json() == [{"index": 1, "name": "Mic"}]
+
+
+def test_copy_to_clipboard_route_copies_text(monkeypatch):
+    import app as app_module
+
+    module = importlib.reload(app_module)
+    client = module.app.test_client()
+
+    copied = []
+    monkeypatch.setattr(module.dict_app, "copy_to_clipboard", copied.append)
+
+    res = client.post("/copy_to_clipboard", json={"text": "hello tray"})
+    assert res.status_code == 200
+    assert res.get_json() == {"success": True}
+    assert copied == ["hello tray"]
+
+
+def test_copy_to_clipboard_route_rejects_missing_text(monkeypatch):
+    import app as app_module
+
+    module = importlib.reload(app_module)
+    client = module.app.test_client()
+
+    copied = []
+    monkeypatch.setattr(module.dict_app, "copy_to_clipboard", copied.append)
+
+    res = client.post("/copy_to_clipboard", json={"text": ""})
+    assert res.status_code == 400
+    assert copied == []
+
+    res = client.post("/copy_to_clipboard", json={})
+    assert res.status_code == 400
+    assert copied == []
+
+
+def test_history_route_returns_transcription_list(monkeypatch):
+    import app as app_module
+
+    module = importlib.reload(app_module)
+    client = module.app.test_client()
+
+    module.dict_app.transcription_history.clear()
+    module.dict_app.transcription_history.extend([
+        {"text": "first", "time": "10:00:00", "source": "batch"},
+        {"text": "second", "time": "10:01:00", "source": "batch"},
+    ])
+
+    res = client.get("/history")
+    assert res.status_code == 200
+    assert res.get_json() == [
+        {"text": "first", "time": "10:00:00", "source": "batch"},
+        {"text": "second", "time": "10:01:00", "source": "batch"},
+    ]

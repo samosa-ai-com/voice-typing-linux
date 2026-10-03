@@ -2570,6 +2570,16 @@ def restart_hotkey():
     return jsonify({"success": True})
 
 
+@app.route("/copy_to_clipboard", methods=["POST"])
+def copy_to_clipboard():
+    data = request.get_json(silent=True) or {}
+    text = data.get("text", "")
+    if not text:
+        return jsonify({"success": False, "error": "missing text"}), 400
+    dict_app.copy_to_clipboard(text)
+    return jsonify({"success": True})
+
+
 @app.route("/reinit_audio", methods=["POST"])
 def reinit_audio():
     dict_app.reinit_audio()
