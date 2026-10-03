@@ -8,6 +8,7 @@ import sounddevice as sd
 import scipy.io.wavfile as wav
 import numpy as np
 from pynput import keyboard
+import shutil
 import subprocess
 import queue
 
@@ -252,6 +253,36 @@ def _load_dotenv():
 _load_dotenv()
 
 _config_lock = threading.Lock()
+
+
+# ---------------------------------------------------------------------------
+# Text-output backend selection (X11 vs Wayland)
+#
+# xdotool and pynput inject via the X server (XTEST/XRecord). On Wayland
+# sessions (e.g. Ubuntu 26.04 GNOME) those events are accepted by XWayland
+# but delivered to nobody, so typing/paste silently does nothing. ydotool
+# injects at the evdev/uinput level instead and works on both, but needs
+# the `ydotoold` daemon running (packaged as a user systemd unit).
+# ---------------------------------------------------------------------------
+# evdev key codes (linux/input-event-codes.h) — stable across layouts.
+_YD_KEY_BACKSPACE = 14
+_YD_KEY_LEFTCTRL = 29
+_YD_KEY_V = 47
+
+
+def _session_type():
+    return os.environ.get("XDG_SESSION_TYPE", "").lower()
+
+
+def _has_ydotool():
+    return shutil.which("ydotool") is not None
+
+
+def _prefer_ydotool():
+    """True when X11 injectors are known-blind: a Wayland session with
+    ydotool installed. Everywhere else (X11 like Ubuntu 24.04, or missing
+    ydotool) the legacy xdotool-first order is kept."""
+    return _session_type() == "wayland" and _has_ydotool()
 
 
 class AudioRecorder:
@@ -743,6 +774,9 @@ class VoiceDictationApp:
             print(f"[CLIP] xclip also failed: {e}", flush=True)
 
     def _backspace(self, count):
+        if _prefer_ydotool():
+            if self._ydotool_key([(_YD_KEY_BACKSPACE, 1), (_YD_KEY_BACKSPACE, 0)] * count):
+                return
         try:
             subprocess.run(
                 ["xdotool", "key"] + ["BackSpace"] * count,
@@ -850,12 +884,43 @@ class VoiceDictationApp:
         else:
             self.copy_to_clipboard(processed)
 
+    def _ydotool_type(self, text):
+        """Type text via ydotool (evdev-level, works on Wayland and X11).
+        Returns True on success. ASCII-only: ydotool maps characters through
+        a US-layout table, so non-ASCII falls through to the paste path."""
+        try:
+            result = subprocess.run(
+                ["ydotool", "type", "--", text], capture_output=True, timeout=60
+            )
+            if result.returncode == 0:
+                print(f"[TYPE] Typed via ydotool: '{text[:50]}'", flush=True)
+                return True
+            print(f"[TYPE] ydotool failed (code {result.returncode}): {result.stderr.decode()[:100]}", flush=True)
+        except Exception as e:
+            print(f"[TYPE] ydotool error: {e}", flush=True)
+        return False
+
+    def _ydotool_key(self, sequence):
+        """Emit raw key down/up pairs via ydotool.
+
+        sequence: list of (evdev_keycode, value) tuples, e.g. [(29, 1), (47, 1)]
+        for Ctrl down + V down. Returns True when the daemon accepted them."""
+        args = ["ydotool", "key"] + [f"{code}:{value}" for code, value in sequence]
+        try:
+            result = subprocess.run(args, capture_output=True, timeout=10)
+            return result.returncode == 0
+        except Exception as e:
+            print(f"[TYPE] ydotool key error: {e}", flush=True)
+            return False
+
     def type_text(self, text):
         if not text:
             return
         with self._typing_lock:
             print(f"Injecting: '{text}'", flush=True)
             self.last_transcription = text
+            if _prefer_ydotool() and self._ydotool_type(text):
+                return
             try:
                 result = subprocess.run(
                     ["xdotool", "type", "--clearmodifiers", text], capture_output=True, timeout=30
@@ -887,6 +952,12 @@ class VoiceDictationApp:
             except Exception as e2:
                 print(f"[TYPE] xclip also failed: {e2}", flush=True)
                 return False
+        if _prefer_ydotool():
+            if self._ydotool_key([(_YD_KEY_LEFTCTRL, 1), (_YD_KEY_V, 1),
+                                  (_YD_KEY_V, 0), (_YD_KEY_LEFTCTRL, 0)]):
+                print(f"[TYPE] Pasted via clipboard (ydotool ctrl+v): '{text[:50]}'", flush=True)
+                return True
+            print("[TYPE] ydotool ctrl+v failed, falling back", flush=True)
         try:
             subprocess.run(
                 ["xdotool", "key", "--clearmodifiers", "ctrl+v"],
@@ -1282,8 +1353,7 @@ class VoiceDictationApp:
             self.toggle_recording()
         if self.backspace_after_hotkey:
             try:
-                subprocess.run(["xdotool", "key", "--clearmodifiers", "BackSpace"],
-                              capture_output=True, timeout=1)
+                self._backspace(1)
             except Exception:
                 pass
 

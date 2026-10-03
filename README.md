@@ -216,7 +216,7 @@ This will start the app on boot, restart if it crashes, and you can check logs w
 | Issue | Solution |
 |-------|----------|
 | Endpoint unreachable | Verify your STT service is running and the URL is correct |
-| Hotkey not working | Choose a different hotkey if your desktop environment uses the same shortcut |
-| Wayland typing issues | Use `ydotool` or run in an X11 environment where key injection is allowed |
+| Hotkey not working | On X11 choose a different hotkey if your desktop uses the same shortcut; on Wayland (Ubuntu 26.04+) pynput/XRecord can't see keys, so bind the combo in Settings → Keyboard → Custom Shortcuts to `curl -s -X POST http://127.0.0.1:3221/toggle_recording` |
+| Wayland typing issues | Install `ydotool` (`sudo apt install ydotool`) and enable its daemon (`systemctl --user enable --now ydotool.service`) — the app prefers it automatically on Wayland sessions, keeping xdotool/pynput as fallback on X11 |
 | Microphone not detected | Check input device selection in the web UI |
 | USB/PulseAudio device not in list | It will appear with a `pulse_source` field and route through the "default" ALSA device |

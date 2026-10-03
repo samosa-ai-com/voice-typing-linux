@@ -137,6 +137,8 @@ def test_notify_and_beep_error_paths(vd, monkeypatch):
 
 def test_type_text_handles_subprocess_and_controller_exceptions(vd, monkeypatch):
     app = vd.VoiceDictationApp()
+    # Legacy X11 chain (Wayland/ydotool order is covered in test_wayland_output.py)
+    monkeypatch.setattr(vd, "_prefer_ydotool", lambda: False)
     monkeypatch.setattr(
         vd.subprocess,
         "run",
@@ -253,6 +255,8 @@ def test_service_idempotent_branches(vd, monkeypatch):
 
 def test_backspace_uses_xdotool_first(vd, monkeypatch):
     app = vd.VoiceDictationApp()
+    # Legacy X11 chain (Wayland/ydotool order is covered in test_wayland_output.py)
+    monkeypatch.setattr(vd, "_prefer_ydotool", lambda: False)
     calls = []
     monkeypatch.setattr(
         vd.subprocess, "run",
@@ -266,6 +270,8 @@ def test_backspace_uses_xdotool_first(vd, monkeypatch):
 
 def test_backspace_fallback_to_pynput(vd, monkeypatch):
     app = vd.VoiceDictationApp()
+    # Legacy X11 chain (Wayland/ydotool order is covered in test_wayland_output.py)
+    monkeypatch.setattr(vd, "_prefer_ydotool", lambda: False)
     monkeypatch.setattr(
         vd.subprocess, "run",
         lambda *a, **k: (_ for _ in ()).throw(RuntimeError("no xdotool")),
@@ -294,6 +300,8 @@ def test_backspace_fallback_to_pynput(vd, monkeypatch):
 def test_type_text_does_not_append_history(vd, monkeypatch):
     app = vd.VoiceDictationApp()
     app.transcription_history.clear()
+    # Legacy X11 chain (Wayland/ydotool order is covered in test_wayland_output.py)
+    monkeypatch.setattr(vd, "_prefer_ydotool", lambda: False)
     monkeypatch.setattr(vd.subprocess, "run", lambda *a, **k: SimpleNamespace(returncode=0))
 
     app.type_text("hello")
